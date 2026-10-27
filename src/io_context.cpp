@@ -24,6 +24,120 @@ Bytes buffer_arg(const Napi::CallbackInfo& info, size_t index, const char* name)
   return {value.Data(), value.Data() + value.Length()};
 }
 
+// One step of a compound write operation, converted from JavaScript on the main thread
+struct WriteStep {
+  enum Kind { AssertExists, AssertVersion, CompareXattr, Create, Write, WriteFull, Append, Truncate, Zero, Remove, SetXattr, RemoveXattr, SetOmap, RemoveOmapKeys };
+  Kind kind{};
+  std::string name;
+  Bytes data;
+  uint64_t offset{};
+  uint64_t length{};
+  int flag{};
+  ByteMap entries;
+  std::vector<std::string> keys;
+};
+
+Bytes buffer_value(const Napi::Value& value, const char* name) {
+  if (!value.IsBuffer()) throw Napi::TypeError::New(value.Env(), std::string(name) + " must be a Buffer");
+  auto buffer = value.As<Napi::Buffer<uint8_t>>();
+  return {buffer.Data(), buffer.Data() + buffer.Length()};
+}
+
+std::string string_value(const Napi::Value& value, const char* name) {
+  if (!value.IsString()) throw Napi::TypeError::New(value.Env(), std::string(name) + " must be a string");
+  return value.As<Napi::String>().Utf8Value();
+}
+
+std::vector<WriteStep> write_steps(const Napi::Value& value) {
+  if (!value.IsArray()) throw Napi::TypeError::New(value.Env(), "steps must be an array");
+  static const std::map<std::string, WriteStep::Kind> kinds = {
+      {"assertExists", WriteStep::AssertExists}, {"assertVersion", WriteStep::AssertVersion}, {"compareXattr", WriteStep::CompareXattr},
+      {"create", WriteStep::Create}, {"write", WriteStep::Write}, {"writeFull", WriteStep::WriteFull}, {"append", WriteStep::Append},
+      {"truncate", WriteStep::Truncate}, {"zero", WriteStep::Zero}, {"remove", WriteStep::Remove}, {"setXattr", WriteStep::SetXattr},
+      {"removeXattr", WriteStep::RemoveXattr}, {"setOmap", WriteStep::SetOmap}, {"removeOmapKeys", WriteStep::RemoveOmapKeys}};
+  static const std::map<std::string, int> comparisons = {
+      {"eq", LIBRADOS_CMPXATTR_OP_EQ}, {"ne", LIBRADOS_CMPXATTR_OP_NE}, {"gt", LIBRADOS_CMPXATTR_OP_GT},
+      {"gte", LIBRADOS_CMPXATTR_OP_GTE}, {"lt", LIBRADOS_CMPXATTR_OP_LT}, {"lte", LIBRADOS_CMPXATTR_OP_LTE}};
+  auto array = value.As<Napi::Array>();
+  std::vector<WriteStep> steps;
+  for (uint32_t i = 0; i < array.Length(); ++i) {
+    if (!array.Get(i).IsObject()) throw Napi::TypeError::New(value.Env(), "steps must be objects");
+    auto item = array.Get(i).As<Napi::Object>();
+    auto kind = kinds.find(string_value(item.Get("type"), "step type"));
+    if (kind == kinds.end()) throw Napi::TypeError::New(value.Env(), "unknown write step " + item.Get("type").As<Napi::String>().Utf8Value());
+    WriteStep step;
+    step.kind = kind->second;
+    switch (step.kind) {
+      case WriteStep::AssertExists: case WriteStep::Remove: break;
+      case WriteStep::AssertVersion: step.offset = uint64_arg(item.Get("version"), "version"); break;
+      case WriteStep::CompareXattr: {
+        step.name = string_value(item.Get("name"), "name");
+        auto comparison = comparisons.find(string_value(item.Get("comparison"), "comparison"));
+        if (comparison == comparisons.end()) throw Napi::TypeError::New(value.Env(), "comparison must be one of eq, ne, gt, gte, lt, lte");
+        step.flag = comparison->second;
+        step.data = buffer_value(item.Get("value"), "value");
+        break;
+      }
+      case WriteStep::Create: step.flag = item.Get("exclusive").ToBoolean() ? LIBRADOS_CREATE_EXCLUSIVE : LIBRADOS_CREATE_IDEMPOTENT; break;
+      case WriteStep::Write: step.data = buffer_value(item.Get("data"), "data"); step.offset = uint64_arg(item.Get("offset"), "offset"); break;
+      case WriteStep::WriteFull: case WriteStep::Append: step.data = buffer_value(item.Get("data"), "data"); break;
+      case WriteStep::Truncate: step.offset = uint64_arg(item.Get("size"), "size"); break;
+      case WriteStep::Zero: step.offset = uint64_arg(item.Get("offset"), "offset"); step.length = uint64_arg(item.Get("length"), "length"); break;
+      case WriteStep::SetXattr: step.name = string_value(item.Get("name"), "name"); step.data = buffer_value(item.Get("value"), "value"); break;
+      case WriteStep::RemoveXattr: step.name = string_value(item.Get("name"), "name"); break;
+      case WriteStep::SetOmap: {
+        if (!item.Get("values").IsObject()) throw Napi::TypeError::New(value.Env(), "values must be an object");
+        auto values = item.Get("values").As<Napi::Object>();
+        auto names = values.GetPropertyNames();
+        for (uint32_t n = 0; n < names.Length(); ++n) {
+          auto key = names.Get(n).As<Napi::String>().Utf8Value();
+          step.entries.emplace_back(key, buffer_value(values.Get(key), "omap values"));
+        }
+        break;
+      }
+      case WriteStep::RemoveOmapKeys: {
+        if (!item.Get("keys").IsArray()) throw Napi::TypeError::New(value.Env(), "keys must be an array");
+        auto keys = item.Get("keys").As<Napi::Array>();
+        for (uint32_t n = 0; n < keys.Length(); ++n) step.keys.push_back(string_value(keys.Get(n), "keys"));
+        break;
+      }
+    }
+    steps.push_back(std::move(step));
+  }
+  return steps;
+}
+
+// Adds a step to a write operation. librados copies buffers and strings into the operation here
+void add_step(rados_write_op_t op, const WriteStep& step) {
+  const char* data = reinterpret_cast<const char*>(step.data.data());
+  switch (step.kind) {
+    case WriteStep::AssertExists: rados_write_op_assert_exists(op); break;
+    case WriteStep::AssertVersion: rados_write_op_assert_version(op, step.offset); break;
+    case WriteStep::CompareXattr: rados_write_op_cmpxattr(op, step.name.c_str(), static_cast<uint8_t>(step.flag), data, step.data.size()); break;
+    case WriteStep::Create: rados_write_op_create(op, step.flag, nullptr); break;
+    case WriteStep::Write: rados_write_op_write(op, data, step.data.size(), step.offset); break;
+    case WriteStep::WriteFull: rados_write_op_write_full(op, data, step.data.size()); break;
+    case WriteStep::Append: rados_write_op_append(op, data, step.data.size()); break;
+    case WriteStep::Truncate: rados_write_op_truncate(op, step.offset); break;
+    case WriteStep::Zero: rados_write_op_zero(op, step.offset, step.length); break;
+    case WriteStep::Remove: rados_write_op_remove(op); break;
+    case WriteStep::SetXattr: rados_write_op_setxattr(op, step.name.c_str(), data, step.data.size()); break;
+    case WriteStep::RemoveXattr: rados_write_op_rmxattr(op, step.name.c_str()); break;
+    case WriteStep::SetOmap: {
+      std::vector<const char*> kp, vp; std::vector<size_t> kl, vl;
+      for (const auto& [key, value] : step.entries) { kp.push_back(key.data()); kl.push_back(key.size()); vp.push_back(reinterpret_cast<const char*>(value.data())); vl.push_back(value.size()); }
+      rados_write_op_omap_set2(op, kp.data(), vp.data(), kl.data(), vl.data(), kp.size());
+      break;
+    }
+    case WriteStep::RemoveOmapKeys: {
+      std::vector<const char*> kp; std::vector<size_t> kl;
+      for (const auto& key : step.keys) { kp.push_back(key.data()); kl.push_back(key.size()); }
+      rados_write_op_omap_rm_keys2(op, kp.data(), kl.data(), kp.size());
+      break;
+    }
+  }
+}
+
 Napi::Object byte_map_to_js(Napi::Env env, const ByteMap& values) {
   auto out = Napi::Object::New(env);
   for (const auto& [key, value] : values)
@@ -58,6 +172,7 @@ void IoContextWrap::Init(Napi::Env env, Napi::Object exports) {
       InstanceMethod("getOmap", &IoContextWrap::GetOmap),
       InstanceMethod("setOmap", &IoContextWrap::SetOmap),
       InstanceMethod("removeOmapKeys", &IoContextWrap::RemoveOmapKeys),
+      InstanceMethod("writeOp", &IoContextWrap::WriteOp),
       InstanceMethod("listObjects", &IoContextWrap::ListObjects),
       InstanceMethod("notify", &IoContextWrap::Notify),
       InstanceMethod("flush", &IoContextWrap::Flush),
@@ -169,6 +284,19 @@ Napi::Value IoContextWrap::SetOmap(const Napi::CallbackInfo& info) {
 Napi::Value IoContextWrap::RemoveOmapKeys(const Napi::CallbackInfo& info) {
   auto oid = string_arg(info, 0, "oid"); if (!info[1].IsArray()) throw Napi::TypeError::New(info.Env(), "keys must be an array"); auto array = info[1].As<Napi::Array>(); std::vector<std::string> keys; for (uint32_t i = 0; i < array.Length(); ++i) keys.push_back(array.Get(i).As<Napi::String>().Utf8Value()); auto state = state_;
   return async_void(info.Env(), "rados_write_op_omap_rm_keys2", oid, [state, oid, keys] { return state->use([&](rados_ioctx_t h) { std::vector<const char*> kp; std::vector<size_t> kl; for (const auto& key : keys) { kp.push_back(key.data()); kl.push_back(key.size()); } auto op = rados_create_write_op(); rados_write_op_omap_rm_keys2(op, kp.data(), kl.data(), keys.size()); int rc = rados_write_op_operate(op, h, oid.c_str(), nullptr, 0); rados_release_write_op(op); return rc; }); });
+}
+
+Napi::Value IoContextWrap::WriteOp(const Napi::CallbackInfo& info) {
+  auto oid = string_arg(info, 0, "oid"); auto steps = write_steps(info[1]); auto state = state_;
+  return async_void(info.Env(), "rados_write_op_operate", oid, [state, oid, steps] {
+    return state->use([&](rados_ioctx_t h) {
+      rados_write_op_t op = rados_create_write_op();
+      for (const auto& step : steps) add_step(op, step);
+      int rc = rados_write_op_operate(op, h, oid.c_str(), nullptr, 0);
+      rados_release_write_op(op);
+      return rc;
+    });
+  });
 }
 
 Napi::Value IoContextWrap::ListObjects(const Napi::CallbackInfo& info) {

@@ -42,6 +42,7 @@ class IoContextWrap : public Napi::ObjectWrap<IoContextWrap> {
   Napi::Value GetOmap(const Napi::CallbackInfo& info);
   Napi::Value SetOmap(const Napi::CallbackInfo& info);
   Napi::Value RemoveOmapKeys(const Napi::CallbackInfo& info);
+  Napi::Value WriteOp(const Napi::CallbackInfo& info);
   Napi::Value ListObjects(const Napi::CallbackInfo& info);
   Napi::Value ListWatchers(const Napi::CallbackInfo& info);
   Napi::Value Notify(const Napi::CallbackInfo& info);

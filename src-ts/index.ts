@@ -1,7 +1,7 @@
 import {CephConfirmationError} from "./errors";
 import {EventEmitter} from "node:events";
 import {native, type NativeCluster, type NativeImageUpdateWatch, type NativeIoContext, type NativeMonitorLog, type NativeObjectWatch, type NativeRbdImage, type NativeRbdPool} from "./native";
-import type {ClusterOptions, CommandResult, CommandTarget, Confirmation, ForceConfirmation, ImageSpec, ImageStat, MonitorLogEntry, ObjectEntry, ObjectNotification, ObjectStat, OmapPage, RbdPoolStats, SnapshotInfo} from "./types";
+import type {ClusterOptions, CommandResult, CommandTarget, Confirmation, ForceConfirmation, ImageSpec, ImageStat, MonitorLogEntry, ObjectEntry, ObjectNotification, ObjectStat, OmapPage, RbdPoolStats, SnapshotInfo, WriteStep, XattrComparison} from "./types";
 
 export * from "./errors";
 export * from "./types";
@@ -93,6 +93,7 @@ export class IoContext {
   setXattr(oid: string, name: string, value: Buffer) { return this.#native.setXattr(oid, name, value); } getXattr(oid: string, name: string) { return this.#native.getXattr(oid, name); } removeXattr(oid: string, name: string) { return this.#native.removeXattr(oid, name); } getXattrs(oid: string) { return this.#native.getXattrs(oid); }
   getOmap(oid: string, options: {startAfter?: string; prefix?: string; maxReturn?: bigint} = {}): Promise<OmapPage> { return this.#native.getOmap(oid, options.startAfter ?? "", options.prefix ?? "", options.maxReturn ?? 1024n); }
   setOmap(oid: string, values: Record<string, Buffer>) { return this.#native.setOmap(oid, values); } removeOmapKeys(oid: string, keys: string[]) { return this.#native.removeOmapKeys(oid, keys); }
+  writeOp(oid: string): WriteOperation { return new WriteOperation(steps => this.#native.writeOp(oid, steps)); }
   async *objects(): AsyncGenerator<ObjectEntry> { for (const object of await this.#native.listObjects()) yield object; }
   notify(oid: string, payload = Buffer.alloc(0), timeoutMs = 30_000n) { return this.#native.notify(oid, payload, timeoutMs); }
   watch(oid: string, options: {timeoutSeconds?: number; queueSize?: number; autoAck?: boolean} = {}): ObjectWatch {
@@ -110,6 +111,31 @@ export class IoContext {
   rbd(): RbdPool { return new RbdPool(this.#native.rbd()); }
   async close(): Promise<void> { finalizer.unregister(this.#finalizerToken); await this.#native.close(); }
   async [Symbol.asyncDispose](): Promise<void> { await this.close(); }
+}
+
+/**
+ * Steps applied to one object atomically by a single OSD operation: every step takes effect, or none does.
+ * A failed check fails the whole operation before anything is written: assertExists() with ENOENT,
+ * assertVersion() with ERANGE, compareXattr() with ECANCELED, and create({exclusive: true}) with EEXIST
+ */
+export class WriteOperation {
+  readonly #steps: WriteStep[] = [];
+  constructor(private readonly run: (steps: WriteStep[]) => Promise<void>) {}
+  assertExists() { this.#steps.push({type: "assertExists"}); return this; }
+  assertVersion(version: bigint) { this.#steps.push({type: "assertVersion", version}); return this; }
+  compareXattr(name: string, comparison: XattrComparison, value: Buffer) { this.#steps.push({type: "compareXattr", name, comparison, value}); return this; }
+  create(options: {exclusive?: boolean} = {}) { this.#steps.push({type: "create", exclusive: options.exclusive ?? true}); return this; }
+  write(data: Buffer, offset = 0n) { this.#steps.push({type: "write", data, offset}); return this; }
+  writeFull(data: Buffer) { this.#steps.push({type: "writeFull", data}); return this; }
+  append(data: Buffer) { this.#steps.push({type: "append", data}); return this; }
+  truncate(size: bigint) { this.#steps.push({type: "truncate", size}); return this; }
+  zero(offset: bigint, length: bigint) { this.#steps.push({type: "zero", offset, length}); return this; }
+  remove() { this.#steps.push({type: "remove"}); return this; }
+  setXattr(name: string, value: Buffer) { this.#steps.push({type: "setXattr", name, value}); return this; }
+  removeXattr(name: string) { this.#steps.push({type: "removeXattr", name}); return this; }
+  setOmap(values: Record<string, Buffer>) { this.#steps.push({type: "setOmap", values}); return this; }
+  removeOmapKeys(keys: string[]) { this.#steps.push({type: "removeOmapKeys", keys}); return this; }
+  operate(): Promise<void> { return this.run([...this.#steps]); }
 }
 
 export class RbdPool {

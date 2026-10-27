@@ -1,4 +1,4 @@
-import type {Capabilities, ClusterStats, CommandResult, ImageSpec, ImageStat, ObjectEntry, ObjectStat, OmapPage, RbdPoolStats, SnapshotInfo, Versions} from "./types";
+import type {Capabilities, ClusterStats, CommandResult, ImageSpec, ImageStat, ObjectEntry, ObjectStat, OmapPage, RbdPoolStats, SnapshotInfo, Versions, WriteStep} from "./types";
 
 export interface NativeCluster {
   closed: boolean; readonly instanceId: bigint;
@@ -20,6 +20,7 @@ export interface NativeIoContext {
   read(oid: string, length: bigint, offset: bigint): Promise<Buffer>; remove(oid: string): Promise<void>; truncate(oid: string, size: bigint): Promise<void>; stat(oid: string): Promise<ObjectStat>;
   setXattr(oid: string, name: string, value: Buffer): Promise<void>; getXattr(oid: string, name: string): Promise<Buffer>; removeXattr(oid: string, name: string): Promise<void>; getXattrs(oid: string): Promise<Record<string, Buffer>>;
   getOmap(oid: string, start: string, prefix: string, max: bigint): Promise<OmapPage>; setOmap(oid: string, values: Record<string, Buffer>): Promise<void>; removeOmapKeys(oid: string, keys: string[]): Promise<void>;
+  writeOp(oid: string, steps: WriteStep[]): Promise<void>;
   listObjects(): Promise<ObjectEntry[]>; notify(oid: string, payload: Buffer, timeout: bigint): Promise<Buffer>; flush(): Promise<void>;
   lockExclusive(oid: string, name: string, cookie: string, description: string, duration: bigint, flags: number): Promise<void>;
   lockShared(oid: string, name: string, cookie: string, tag: string, description: string, duration: bigint, flags: number): Promise<void>;

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {once} from "node:events";
 import {after, before, test} from "node:test";
-import {Cluster, RbdFeature} from "../../src-ts";
+import {CephError, Cluster, RbdFeature} from "../../src-ts";
 
 const enabled = process.env.CEPH_INTEGRATION === "1";
 const pool = process.env.CEPH_TEST_POOL ?? `node-librados-${process.pid}`;
@@ -43,6 +43,28 @@ test("binary RADOS I/O, xattrs, omap, listing, and notifications", {skip: !enabl
   await notification.ack(Buffer.from("pong"));
   assert.ok((await notify).includes(Buffer.from("pong")));
   await watch.close();
+});
+
+test("compound write operations apply all steps or none", {skip: !enabled}, async () => {
+  await using io = cluster.ioContext(pool);
+  const failsWith = (errno: number) => (error: unknown) => error instanceof CephError && error.errno === errno;
+  await io.writeOp("op").create({exclusive: true}).writeFull(Buffer.from("first")).setXattr("state", Buffer.from("ready")).operate();
+  assert.equal((await io.read("op", 16n)).toString(), "first");
+  assert.equal((await io.getXattr("op", "state")).toString(), "ready");
+
+  await assert.rejects(io.writeOp("op").create({exclusive: true}).writeFull(Buffer.from("second")).operate(), failsWith(17));
+  await assert.rejects(io.writeOp("op").compareXattr("state", "eq", Buffer.from("other")).writeFull(Buffer.from("second")).removeXattr("state").operate(), failsWith(125));
+  assert.equal((await io.read("op", 16n)).toString(), "first");
+  assert.equal((await io.getXattr("op", "state")).toString(), "ready");
+
+  await io.writeOp("op").compareXattr("state", "eq", Buffer.from("ready")).writeFull(Buffer.from("second")).setXattr("state", Buffer.from("done")).operate();
+  assert.equal((await io.read("op", 16n)).toString(), "second");
+  assert.equal((await io.getXattr("op", "state")).toString(), "done");
+
+  await assert.rejects(io.writeOp("op-missing").assertExists().writeFull(Buffer.from("x")).operate(), failsWith(2));
+  await assert.rejects(io.stat("op-missing"), failsWith(2));
+  await io.writeOp("op").remove().operate();
+  await assert.rejects(io.stat("op"), failsWith(2));
 });
 
 test("RBD image, I/O, metadata, snapshots, resize, and trash", {skip: !enabled}, async () => {

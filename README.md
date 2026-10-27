@@ -53,6 +53,21 @@ for await (const object of io.objects()) {
 }
 ```
 
+A compound write applies all of its steps to one object atomically, or none of them. Checks such as an exclusive create or an xattr comparison make it conditional:
+
+```ts
+await io.writeOp("payload")
+  .create({exclusive: true})
+  .writeFull(data)
+  .setXattr("checksum", checksum)
+  .operate();
+
+await io.writeOp("payload")
+  .compareXattr("state", "eq", Buffer.from("pending"))
+  .setXattr("state", Buffer.from("done"))
+  .operate();
+```
+
 Administrative commands are deliberately marked unsafe because their JSON schema and authorization are controlled by the connected Ceph release:
 
 ```ts

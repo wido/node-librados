@@ -8,7 +8,7 @@
     "rados_ioctx_pool_required_alignment2", "rados_write", "rados_write_full", "rados_append", "rados_read", "rados_remove", "rados_trunc", "rados_stat",
     "rados_setxattr", "rados_getxattr", "rados_rmxattr", "rados_getxattrs", "rados_getxattrs_next", "rados_getxattrs_end", "rados_create_read_op",
     "rados_read_op_omap_get_vals2", "rados_read_op_operate", "rados_omap_get_next2", "rados_omap_get_end", "rados_release_read_op",
-    "rados_create_write_op", "rados_write_op_omap_set2", "rados_write_op_omap_rm_keys2", "rados_write_op_operate", "rados_release_write_op",
+    "rados_create_write_op", "rados_write_op_omap_set2", "rados_write_op_assert_exists", "rados_write_op_assert_version", "rados_write_op_cmpxattr", "rados_write_op_create", "rados_write_op_write", "rados_write_op_write_full", "rados_write_op_append", "rados_write_op_truncate", "rados_write_op_zero", "rados_write_op_remove", "rados_write_op_setxattr", "rados_write_op_rmxattr", "rados_write_op_omap_rm_keys2", "rados_write_op_operate", "rados_release_write_op",
     "rados_nobjects_list_open", "rados_nobjects_list_next2", "rados_nobjects_list_close", "rados_notify2", "rados_notify_ack", "rados_watch3",
     "rados_unwatch2", "rados_watch_flush", "rados_aio_flush", "rados_lock_exclusive", "rados_lock_shared", "rados_unlock", "rados_break_lock",
     "rados_mon_command", "rados_mon_command_target", "rados_mgr_command", "rados_mgr_command_target", "rados_osd_command", "rados_pg_command",

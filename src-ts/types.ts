@@ -53,6 +53,24 @@ export interface ObjectEntry {
   namespace: string;
 }
 
+export type XattrComparison = "eq" | "ne" | "gt" | "gte" | "lt" | "lte";
+
+export type WriteStep =
+  | {type: "assertExists"}
+  | {type: "assertVersion"; version: bigint}
+  | {type: "compareXattr"; name: string; comparison: XattrComparison; value: Buffer}
+  | {type: "create"; exclusive: boolean}
+  | {type: "write"; data: Buffer; offset: bigint}
+  | {type: "writeFull"; data: Buffer}
+  | {type: "append"; data: Buffer}
+  | {type: "truncate"; size: bigint}
+  | {type: "zero"; offset: bigint; length: bigint}
+  | {type: "remove"}
+  | {type: "setXattr"; name: string; value: Buffer}
+  | {type: "removeXattr"; name: string}
+  | {type: "setOmap"; values: Record<string, Buffer>}
+  | {type: "removeOmapKeys"; keys: string[]};
+
 export interface OmapPage {
   entries: Record<string, Buffer>;
   more: boolean;
