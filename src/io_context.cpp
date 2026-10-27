@@ -115,20 +115,20 @@ Napi::Value IoContextWrap::RequiresAlignment(const Napi::CallbackInfo& info) {
 }
 
 Napi::Value IoContextWrap::Write(const Napi::CallbackInfo& info) {
-  auto oid = string_arg(info, 0, "oid"); auto data = buffer_arg(info, 1, "data"); uint64_t offset = uint64_arg(info[2], "offset"); auto state = state_;
-  return async_void(info.Env(), "rados_write", oid, [state, oid, data, offset] { return state->use([&](rados_ioctx_t h) { return rados_write(h, oid.c_str(), reinterpret_cast<const char*>(data.data()), data.size(), offset); }); });
+  auto oid = string_arg(info, 0, "oid"); BufferView data(info, 1, "data"); uint64_t offset = uint64_arg(info[2], "offset"); auto state = state_;
+  return async_void(info.Env(), "rados_write", oid, [state, oid, data, offset] { return state->use([&](rados_ioctx_t h) { return rados_write(h, oid.c_str(), data.data(), data.size(), offset); }); });
 }
 Napi::Value IoContextWrap::WriteFull(const Napi::CallbackInfo& info) {
-  auto oid = string_arg(info, 0, "oid"); auto data = buffer_arg(info, 1, "data"); auto state = state_;
-  return async_void(info.Env(), "rados_write_full", oid, [state, oid, data] { return state->use([&](rados_ioctx_t h) { return rados_write_full(h, oid.c_str(), reinterpret_cast<const char*>(data.data()), data.size()); }); });
+  auto oid = string_arg(info, 0, "oid"); BufferView data(info, 1, "data"); auto state = state_;
+  return async_void(info.Env(), "rados_write_full", oid, [state, oid, data] { return state->use([&](rados_ioctx_t h) { return rados_write_full(h, oid.c_str(), data.data(), data.size()); }); });
 }
 Napi::Value IoContextWrap::Append(const Napi::CallbackInfo& info) {
-  auto oid = string_arg(info, 0, "oid"); auto data = buffer_arg(info, 1, "data"); auto state = state_;
-  return async_void(info.Env(), "rados_append", oid, [state, oid, data] { return state->use([&](rados_ioctx_t h) { return rados_append(h, oid.c_str(), reinterpret_cast<const char*>(data.data()), data.size()); }); });
+  auto oid = string_arg(info, 0, "oid"); BufferView data(info, 1, "data"); auto state = state_;
+  return async_void(info.Env(), "rados_append", oid, [state, oid, data] { return state->use([&](rados_ioctx_t h) { return rados_append(h, oid.c_str(), data.data(), data.size()); }); });
 }
 Napi::Value IoContextWrap::Read(const Napi::CallbackInfo& info) {
   auto oid = string_arg(info, 0, "oid"); size_t length = static_cast<size_t>(uint64_arg(info[1], "length")); uint64_t offset = uint64_arg(info[2], "offset"); auto state = state_;
-  return async_value<Bytes>(info.Env(), "rados_read", oid, [state, oid, length, offset](Bytes& out) { out.resize(length); int rc = state->use([&](rados_ioctx_t h) { return rados_read(h, oid.c_str(), reinterpret_cast<char*>(out.data()), out.size(), offset); }); if (rc >= 0) out.resize(static_cast<size_t>(rc)); return rc < 0 ? rc : 0; }, [](Napi::Env env, Bytes& out) { return Napi::Buffer<uint8_t>::Copy(env, out.data(), out.size()); });
+  return async_value<ReadBytes>(info.Env(), "rados_read", oid, [state, oid, length, offset](ReadBytes& out) { char* buffer = out.allocate(length); int rc = state->use([&](rados_ioctx_t h) { return rados_read(h, oid.c_str(), buffer, length, offset); }); if (rc >= 0) out.size = static_cast<size_t>(rc); return rc < 0 ? rc : 0; }, [](Napi::Env env, ReadBytes& out) { return out.to_buffer(env); });
 }
 Napi::Value IoContextWrap::Remove(const Napi::CallbackInfo& info) {
   auto oid = string_arg(info, 0, "oid"); auto state = state_; return async_void(info.Env(), "rados_remove", oid, [state, oid] { return state->use([&](rados_ioctx_t h) { return rados_remove(h, oid.c_str()); }); });

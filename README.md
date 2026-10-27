@@ -53,6 +53,8 @@ for await (const object of io.objects()) {
 }
 ```
 
+Data is not copied on its way to or from Ceph. A `Buffer` passed to `write()`, `writeFull()`, `append()` or `RbdImage.write()` is used in place until the returned promise settles, so like with `fs.write()` it must not be changed before then. A read returns a `Buffer` over the memory librados read into.
+
 Administrative commands are deliberately marked unsafe because their JSON schema and authorization are controlled by the connected Ceph release:
 
 ```ts

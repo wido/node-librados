@@ -45,6 +45,16 @@ test("binary RADOS I/O, xattrs, omap, listing, and notifications", {skip: !enabl
   await watch.close();
 });
 
+test("large writes and reads, and reads past the end", {skip: !enabled}, async () => {
+  await using io = cluster.ioContext(pool);
+  const payload = Buffer.alloc(4 * 1024 * 1024 + 3, 7);
+  await io.writeFull("zero-copy", payload);
+  assert.deepEqual(await io.read("zero-copy", BigInt(payload.length)), payload);
+  const tail = await io.read("zero-copy", 1024n * 1024n, BigInt(payload.length - 3));
+  assert.deepEqual(tail, Buffer.from([7, 7, 7]));
+  await io.remove("zero-copy");
+});
+
 test("RBD image, I/O, metadata, snapshots, resize, and trash", {skip: !enabled}, async () => {
   await using io = cluster.ioContext(pool);
   const rbd = io.rbd();

@@ -67,6 +67,56 @@ class HandleState {
   std::atomic<uint32_t> children_{0};
 };
 
+// The bytes of a Buffer argument, for an operation on the thread pool, without copying them. The Buffer is
+// referenced until the operation's worker is deleted on the main thread. As with fs.write(), the caller must
+// not change or transfer the Buffer before the operation settles
+class BufferView {
+ public:
+  BufferView(const Napi::CallbackInfo& info, size_t index, const char* name) {
+    if (info.Length() <= index || !info[index].IsBuffer())
+      throw Napi::TypeError::New(info.Env(), std::string(name) + " must be a Buffer");
+    auto buffer = info[index].As<Napi::Buffer<uint8_t>>();
+    data_ = reinterpret_cast<const char*>(buffer.Data());
+    size_ = buffer.Length();
+    ref_ = std::make_shared<Napi::Reference<Napi::Buffer<uint8_t>>>(Napi::Persistent(buffer));
+  }
+  const char* data() const { return data_; }
+  size_t size() const { return size_; }
+
+ private:
+  const char* data_{};
+  size_t size_{};
+  std::shared_ptr<Napi::Reference<Napi::Buffer<uint8_t>>> ref_;
+};
+
+// Bytes read on the thread pool into memory that becomes the Buffer handed to JavaScript, instead of being
+// copied into one on the main thread
+struct ReadBytes {
+  std::unique_ptr<uint8_t[]> data;
+  size_t capacity{};
+  size_t size{};
+
+  char* allocate(size_t length) {
+    data.reset(new uint8_t[length ? length : 1]);
+    capacity = length;
+    size = 0;
+    return reinterpret_cast<char*>(data.get());
+  }
+
+  Napi::Value to_buffer(Napi::Env env) {
+    // a short read would keep the whole allocation alive with the Buffer, so it is copied instead
+    if (size < capacity / 2) return Napi::Buffer<uint8_t>::Copy(env, data.get(), size);
+    const int64_t external = static_cast<int64_t>(capacity);
+    auto buffer = Napi::Buffer<uint8_t>::NewOrCopy(env, data.release(), size, [external](Napi::BasicEnv env, uint8_t* bytes) {
+      delete[] bytes;
+      Napi::MemoryManagement::AdjustExternalMemory(env, -external);
+    });
+    // the garbage collector does not see memory it did not allocate unless it is told
+    Napi::MemoryManagement::AdjustExternalMemory(env, external);
+    return buffer;
+  }
+};
+
 using ClusterState = HandleState<rados_t>;
 using IoState = HandleState<rados_ioctx_t>;
 using ImageState = HandleState<rbd_image_t>;

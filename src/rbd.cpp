@@ -10,17 +10,11 @@ Napi::FunctionReference RbdPoolWrap::constructor;
 Napi::FunctionReference RbdImageWrap::constructor;
 
 namespace {
-using Bytes = std::vector<uint8_t>;
 struct ImageSpec { std::string id; std::string name; };
 struct OpenImage { std::shared_ptr<ImageState> state; std::string name; };
 struct ImageStat { uint64_t size{}; uint64_t object_size{}; uint64_t objects{}; int order{}; };
 struct Snap { uint64_t id{}; uint64_t size{}; std::string name; };
 using StringMap = std::vector<std::pair<std::string, std::string>>;
-
-Bytes data_arg(const Napi::CallbackInfo& info, size_t index, const char* name) {
-  if (info.Length() <= index || !info[index].IsBuffer()) throw Napi::TypeError::New(info.Env(), std::string(name) + " must be a Buffer");
-  auto b = info[index].As<Napi::Buffer<uint8_t>>(); return {b.Data(), b.Data() + b.Length()};
-}
 
 std::vector<std::string> nul_strings(const char* data, size_t length) {
   std::vector<std::string> out;
@@ -146,8 +140,8 @@ Napi::Value RbdImageWrap::Size(const Napi::CallbackInfo& info) { auto image = im
 Napi::Value RbdImageWrap::Resize(const Napi::CallbackInfo& info) { uint64_t size = uint64_arg(info[0], "size"); bool shrink = info.Length() > 1 && info[1].ToBoolean(); auto image = image_; return async_void(info.Env(), "rbd_resize2", name_, [image, size, shrink] { return image->use([&](rbd_image_t h) { return rbd_resize2(h, size, shrink, ignore_progress, nullptr); }); }); }
 Napi::Value RbdImageWrap::Features(const Napi::CallbackInfo& info) { auto image = image_; return async_value<uint64_t>(info.Env(), "rbd_get_features", name_, [image](uint64_t& out) { return image->use([&](rbd_image_t h) { return rbd_get_features(h, &out); }); }, [](Napi::Env env, uint64_t& out) { return Napi::BigInt::New(env, out); }); }
 Napi::Value RbdImageWrap::Flags(const Napi::CallbackInfo& info) { auto image = image_; return async_value<uint64_t>(info.Env(), "rbd_get_flags", name_, [image](uint64_t& out) { return image->use([&](rbd_image_t h) { return rbd_get_flags(h, &out); }); }, [](Napi::Env env, uint64_t& out) { return Napi::BigInt::New(env, out); }); }
-Napi::Value RbdImageWrap::Read(const Napi::CallbackInfo& info) { uint64_t offset = uint64_arg(info[0], "offset"); size_t length = static_cast<size_t>(uint64_arg(info[1], "length")); int flags = info.Length() > 2 ? static_cast<int>(int64_arg(info[2], "flags")) : 0; auto image = image_; return async_value<Bytes>(info.Env(), "rbd_read2", name_, [image, offset, length, flags](Bytes& out) { out.resize(length); ssize_t rc = image->use([&](rbd_image_t h) { return rbd_read2(h, offset, length, reinterpret_cast<char*>(out.data()), flags); }); if (rc >= 0) out.resize(static_cast<size_t>(rc)); return rc < 0 ? static_cast<int>(rc) : 0; }, [](Napi::Env env, Bytes& out) { return Napi::Buffer<uint8_t>::Copy(env, out.data(), out.size()); }); }
-Napi::Value RbdImageWrap::Write(const Napi::CallbackInfo& info) { uint64_t offset = uint64_arg(info[0], "offset"); auto data = data_arg(info, 1, "data"); int flags = info.Length() > 2 ? static_cast<int>(int64_arg(info[2], "flags")) : 0; auto image = image_; return async_void(info.Env(), "rbd_write2", name_, [image, offset, data, flags] { ssize_t rc = image->use([&](rbd_image_t h) { return rbd_write2(h, offset, data.size(), reinterpret_cast<const char*>(data.data()), flags); }); return rc < 0 ? static_cast<int>(rc) : 0; }); }
+Napi::Value RbdImageWrap::Read(const Napi::CallbackInfo& info) { uint64_t offset = uint64_arg(info[0], "offset"); size_t length = static_cast<size_t>(uint64_arg(info[1], "length")); int flags = info.Length() > 2 ? static_cast<int>(int64_arg(info[2], "flags")) : 0; auto image = image_; return async_value<ReadBytes>(info.Env(), "rbd_read2", name_, [image, offset, length, flags](ReadBytes& out) { char* buffer = out.allocate(length); ssize_t rc = image->use([&](rbd_image_t h) { return rbd_read2(h, offset, length, buffer, flags); }); if (rc >= 0) out.size = static_cast<size_t>(rc); return rc < 0 ? static_cast<int>(rc) : 0; }, [](Napi::Env env, ReadBytes& out) { return out.to_buffer(env); }); }
+Napi::Value RbdImageWrap::Write(const Napi::CallbackInfo& info) { uint64_t offset = uint64_arg(info[0], "offset"); BufferView data(info, 1, "data"); int flags = info.Length() > 2 ? static_cast<int>(int64_arg(info[2], "flags")) : 0; auto image = image_; return async_void(info.Env(), "rbd_write2", name_, [image, offset, data, flags] { ssize_t rc = image->use([&](rbd_image_t h) { return rbd_write2(h, offset, data.size(), data.data(), flags); }); return rc < 0 ? static_cast<int>(rc) : 0; }); }
 Napi::Value RbdImageWrap::Discard(const Napi::CallbackInfo& info) { uint64_t offset = uint64_arg(info[0], "offset"), length = uint64_arg(info[1], "length"); auto image = image_; return async_void(info.Env(), "rbd_discard", name_, [image, offset, length] { return image->use([&](rbd_image_t h) { return rbd_discard(h, offset, length); }); }); }
 Napi::Value RbdImageWrap::Flush(const Napi::CallbackInfo& info) { auto image = image_; return async_void(info.Env(), "rbd_flush", name_, [image] { return image->use([](rbd_image_t h) { return rbd_flush(h); }); }); }
 Napi::Value RbdImageWrap::InvalidateCache(const Napi::CallbackInfo& info) { auto image = image_; return async_void(info.Env(), "rbd_invalidate_cache", name_, [image] { return image->use([](rbd_image_t h) { return rbd_invalidate_cache(h); }); }); }
