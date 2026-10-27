@@ -93,7 +93,19 @@ export class IoContext {
   setXattr(oid: string, name: string, value: Buffer) { return this.#native.setXattr(oid, name, value); } getXattr(oid: string, name: string) { return this.#native.getXattr(oid, name); } removeXattr(oid: string, name: string) { return this.#native.removeXattr(oid, name); } getXattrs(oid: string) { return this.#native.getXattrs(oid); }
   getOmap(oid: string, options: {startAfter?: string; prefix?: string; maxReturn?: bigint} = {}): Promise<OmapPage> { return this.#native.getOmap(oid, options.startAfter ?? "", options.prefix ?? "", options.maxReturn ?? 1024n); }
   setOmap(oid: string, values: Record<string, Buffer>) { return this.#native.setOmap(oid, values); } removeOmapKeys(oid: string, keys: string[]) { return this.#native.removeOmapKeys(oid, keys); }
-  async *objects(): AsyncGenerator<ObjectEntry> { for (const object of await this.#native.listObjects()) yield object; }
+  /** Lists the objects a page at a time, so a pool of any size can be listed without holding it in memory */
+  async *objects(options: {pageSize?: number} = {}): AsyncGenerator<ObjectEntry> {
+    const list = this.#native.openObjectList();
+    try {
+      for (;;) {
+        const page = await list.next(options.pageSize ?? 1024);
+        yield* page.entries;
+        if (page.done) return;
+      }
+    } finally {
+      await list.close();
+    }
+  }
   notify(oid: string, payload = Buffer.alloc(0), timeoutMs = 30_000n) { return this.#native.notify(oid, payload, timeoutMs); }
   watch(oid: string, options: {timeoutSeconds?: number; queueSize?: number; autoAck?: boolean} = {}): ObjectWatch {
     let subscription!: ObjectWatch;

@@ -58,7 +58,7 @@ void IoContextWrap::Init(Napi::Env env, Napi::Object exports) {
       InstanceMethod("getOmap", &IoContextWrap::GetOmap),
       InstanceMethod("setOmap", &IoContextWrap::SetOmap),
       InstanceMethod("removeOmapKeys", &IoContextWrap::RemoveOmapKeys),
-      InstanceMethod("listObjects", &IoContextWrap::ListObjects),
+      InstanceMethod("openObjectList", &IoContextWrap::OpenObjectList),
       InstanceMethod("notify", &IoContextWrap::Notify),
       InstanceMethod("flush", &IoContextWrap::Flush),
       InstanceMethod("lockExclusive", &IoContextWrap::LockExclusive),
@@ -171,10 +171,7 @@ Napi::Value IoContextWrap::RemoveOmapKeys(const Napi::CallbackInfo& info) {
   return async_void(info.Env(), "rados_write_op_omap_rm_keys2", oid, [state, oid, keys] { return state->use([&](rados_ioctx_t h) { std::vector<const char*> kp; std::vector<size_t> kl; for (const auto& key : keys) { kp.push_back(key.data()); kl.push_back(key.size()); } auto op = rados_create_write_op(); rados_write_op_omap_rm_keys2(op, kp.data(), kl.data(), keys.size()); int rc = rados_write_op_operate(op, h, oid.c_str(), nullptr, 0); rados_release_write_op(op); return rc; }); });
 }
 
-Napi::Value IoContextWrap::ListObjects(const Napi::CallbackInfo& info) {
-  auto state = state_; return async_value<std::vector<ObjectEntry>>(info.Env(), "rados_nobjects_list", pool_, [state](std::vector<ObjectEntry>& out) { return state->use([&](rados_ioctx_t h) { rados_list_ctx_t iter = nullptr; int rc = rados_nobjects_list_open(h, &iter); if (rc < 0) return rc; const char *entry = nullptr, *key = nullptr, *space = nullptr; size_t entry_len = 0, key_len = 0, space_len = 0; while ((rc = rados_nobjects_list_next2(iter, &entry, &key, &space, &entry_len, &key_len, &space_len)) == 0) out.push_back({std::string(entry, entry_len), key ? std::string(key, key_len) : "", space ? std::string(space, space_len) : ""}); rados_nobjects_list_close(iter); return rc == -ENOENT ? 0 : rc; }); }, [](Napi::Env env, std::vector<ObjectEntry>& values) { auto out = Napi::Array::New(env, values.size()); for (size_t i = 0; i < values.size(); ++i) { auto item = Napi::Object::New(env); item.Set("name", values[i].name); item.Set("locator", values[i].locator); item.Set("namespace", values[i].nspace); out.Set(i, item); } return out; });
-}
-
+Napi::Value IoContextWrap::OpenObjectList(const Napi::CallbackInfo& info) { return ObjectListWrap::Create(info.Env(), state_, pool_); }
 Napi::Value IoContextWrap::Notify(const Napi::CallbackInfo& info) {
   auto oid = string_arg(info, 0, "oid"); auto payload = buffer_arg(info, 1, "payload"); uint64_t timeout = uint64_arg(info[2], "timeoutMs"); auto state = state_;
   return async_value<Bytes>(info.Env(), "rados_notify2", oid, [state, oid, payload, timeout](Bytes& out) { char* reply = nullptr; size_t len = 0; int rc = state->use([&](rados_ioctx_t h) { return rados_notify2(h, oid.c_str(), reinterpret_cast<const char*>(payload.data()), static_cast<int>(payload.size()), timeout, &reply, &len); }); if (reply) { out.assign(reply, reply + len); rados_buffer_free(reply); } return rc; }, [](Napi::Env env, Bytes& out) { return Napi::Buffer<uint8_t>::Copy(env, out.data(), out.size()); });
@@ -196,6 +193,92 @@ Napi::Value IoContextWrap::Watch(const Napi::CallbackInfo& info) {
   uint32_t queue = static_cast<uint32_t>(uint64_arg(info[2], "queueSize"));
   if (info.Length() < 4 || !info[3].IsFunction()) throw Napi::TypeError::New(info.Env(), "callback must be a function");
   return ObjectWatchWrap::Create(info.Env(), state_, cluster_, oid, timeout, queue, info[3].As<Napi::Function>());
+}
+
+Napi::FunctionReference ObjectListWrap::constructor;
+
+struct ObjectListWrap::Data {
+  std::shared_ptr<IoState> io;
+  std::string pool;
+  // a listing is not thread safe, so one page is read at a time
+  std::mutex mutex;
+  rados_list_ctx_t list{};
+  bool done{false};
+  bool closed{false};
+
+  int close() {
+    std::lock_guard lock(mutex);
+    if (closed) return 0;
+    closed = true;
+    if (list) rados_nobjects_list_close(list);
+    list = nullptr;
+    io->remove_child();
+    return 0;
+  }
+};
+
+struct ObjectPage { std::vector<ObjectEntry> entries; bool done{}; };
+
+void ObjectListWrap::Init(Napi::Env env, Napi::Object exports) {
+  auto function = DefineClass(env, "NativeObjectList", {
+      InstanceMethod("next", &ObjectListWrap::Next),
+      InstanceMethod("close", &ObjectListWrap::Close),
+  });
+  constructor = Napi::Persistent(function); constructor.SuppressDestruct();
+  exports.Set("NativeObjectList", function);
+}
+
+Napi::Object ObjectListWrap::Create(Napi::Env env, std::shared_ptr<IoState> io, std::string pool) {
+  auto data = std::make_shared<Data>();
+  data->io = std::move(io);
+  data->pool = std::move(pool);
+  // the io context may not be destroyed under an open listing
+  data->io->add_child();
+  auto* holder = new std::shared_ptr<Data>(std::move(data));
+  return constructor.New({Napi::External<std::shared_ptr<Data>>::New(env, holder)});
+}
+
+ObjectListWrap::ObjectListWrap(const Napi::CallbackInfo& info) : Napi::ObjectWrap<ObjectListWrap>(info) {
+  if (!info.Length() || !info[0].IsExternal()) throw Napi::TypeError::New(info.Env(), "ObjectList cannot be constructed directly");
+  auto* holder = info[0].As<Napi::External<std::shared_ptr<Data>>>().Data();
+  data_ = std::move(*holder);
+  delete holder;
+}
+
+// closing a listing only frees client memory, so it may happen on the main thread
+ObjectListWrap::~ObjectListWrap() { if (data_) data_->close(); }
+
+Napi::Value ObjectListWrap::Next(const Napi::CallbackInfo& info) {
+  uint64_t max = uint64_arg(info[0], "maxEntries");
+  if (!max) throw Napi::RangeError::New(info.Env(), "maxEntries must be greater than zero");
+  auto data = data_;
+  return async_value<ObjectPage>(info.Env(), "rados_nobjects_list_next2", data->pool, [data, max](ObjectPage& out) {
+    std::lock_guard lock(data->mutex);
+    if (data->closed) throw std::runtime_error("object list is closed");
+    if (data->done) { out.done = true; return 0; }
+    return data->io->use([&](rados_ioctx_t h) {
+      if (!data->list) {
+        int rc = rados_nobjects_list_open(h, &data->list);
+        if (rc < 0) { data->list = nullptr; return rc; }
+      }
+      const char *entry = nullptr, *key = nullptr, *space = nullptr; size_t entry_len = 0, key_len = 0, space_len = 0;
+      while (out.entries.size() < max) {
+        int rc = rados_nobjects_list_next2(data->list, &entry, &key, &space, &entry_len, &key_len, &space_len);
+        if (rc == -ENOENT) { data->done = out.done = true; break; }
+        if (rc < 0) return rc;
+        out.entries.push_back({std::string(entry, entry_len), key ? std::string(key, key_len) : "", space ? std::string(space, space_len) : ""});
+      }
+      return 0;
+    });
+  }, [](Napi::Env env, ObjectPage& page) {
+    auto entries = Napi::Array::New(env, page.entries.size());
+    for (size_t i = 0; i < page.entries.size(); ++i) { auto item = Napi::Object::New(env); item.Set("name", page.entries[i].name); item.Set("locator", page.entries[i].locator); item.Set("namespace", page.entries[i].nspace); entries.Set(i, item); }
+    auto out = Napi::Object::New(env); out.Set("entries", entries); out.Set("done", page.done); return out;
+  });
+}
+
+Napi::Value ObjectListWrap::Close(const Napi::CallbackInfo& info) {
+  auto data = data_; return async_void(info.Env(), "rados_nobjects_list_close", data->pool, [data] { return data->close(); });
 }
 
 }  // namespace nl

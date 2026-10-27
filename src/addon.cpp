@@ -113,6 +113,7 @@ static Napi::Object Capabilities(const Napi::CallbackInfo& info) {
 
 static Napi::Object Init(Napi::Env env, Napi::Object exports) {
   IoContextWrap::Init(env, exports);
+  ObjectListWrap::Init(env, exports);
   ObjectWatchWrap::Init(env, exports);
   MonitorLogWrap::Init(env, exports);
   ImageUpdateWatchWrap::Init(env, exports);

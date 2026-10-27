@@ -42,7 +42,7 @@ class IoContextWrap : public Napi::ObjectWrap<IoContextWrap> {
   Napi::Value GetOmap(const Napi::CallbackInfo& info);
   Napi::Value SetOmap(const Napi::CallbackInfo& info);
   Napi::Value RemoveOmapKeys(const Napi::CallbackInfo& info);
-  Napi::Value ListObjects(const Napi::CallbackInfo& info);
+  Napi::Value OpenObjectList(const Napi::CallbackInfo& info);
   Napi::Value ListWatchers(const Napi::CallbackInfo& info);
   Napi::Value Notify(const Napi::CallbackInfo& info);
   Napi::Value Flush(const Napi::CallbackInfo& info);
@@ -56,6 +56,22 @@ class IoContextWrap : public Napi::ObjectWrap<IoContextWrap> {
   std::shared_ptr<IoState> state_;
   std::shared_ptr<ClusterState> cluster_;
   std::string pool_;
+};
+
+// A listing of the objects in an io context, read a page at a time
+class ObjectListWrap : public Napi::ObjectWrap<ObjectListWrap> {
+ public:
+  struct Data;
+  static Napi::FunctionReference constructor;
+  static void Init(Napi::Env env, Napi::Object exports);
+  static Napi::Object Create(Napi::Env env, std::shared_ptr<IoState> io, std::string pool);
+  explicit ObjectListWrap(const Napi::CallbackInfo& info);
+  ~ObjectListWrap() override;
+
+ private:
+  Napi::Value Next(const Napi::CallbackInfo& info);
+  Napi::Value Close(const Napi::CallbackInfo& info);
+  std::shared_ptr<Data> data_;
 };
 
 }  // namespace nl

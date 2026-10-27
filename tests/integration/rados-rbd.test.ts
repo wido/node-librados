@@ -45,6 +45,19 @@ test("binary RADOS I/O, xattrs, omap, listing, and notifications", {skip: !enabl
   await watch.close();
 });
 
+test("lists objects a page at a time", {skip: !enabled}, async () => {
+  await using io = cluster.ioContext(pool);
+  const prefix = "stream-objects";
+  const names = Array.from({length: 25}, (_, i) => `${prefix}-${i}`);
+  for (const name of names) await io.writeFull(name, Buffer.from(name));
+  const listed: string[] = [];
+  for await (const object of io.objects({pageSize: 4})) if (object.name.startsWith(prefix)) listed.push(object.name);
+  assert.deepEqual(listed.sort(), [...names].sort());
+  // leaving a listing early closes it, or closing the io context below would fail with EBUSY
+  for await (const object of io.objects({pageSize: 2})) { assert.ok(object.name); break; }
+  for (const name of names) await io.remove(name);
+});
+
 test("RBD image, I/O, metadata, snapshots, resize, and trash", {skip: !enabled}, async () => {
   await using io = cluster.ioContext(pool);
   const rbd = io.rbd();
