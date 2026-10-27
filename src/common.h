@@ -52,6 +52,21 @@ class HandleState {
     return closed_;
   }
 
+  // Runs fn with the handle while no operation can use it, for settings that every operation reads
+  template <typename Fn>
+  auto change(Fn&& fn) -> decltype(fn(std::declval<Handle>())) {
+    std::unique_lock lock(mutex_);
+    if (closed_ || !handle_) throw std::runtime_error("resource is closed");
+    return fn(handle_);
+  }
+
+  // Operations queued or running on the handle, and watches registered on it. An operation reads the
+  // namespace, locator key and read snapshot when it runs on the thread pool, not when it is called, so
+  // they may only change while there are none
+  void begin_op() { ops_.fetch_add(1); }
+  void end_op() { ops_.fetch_sub(1); }
+  uint32_t ops() const { return ops_.load(); }
+
   void add_child() { children_.fetch_add(1); }
   void remove_child() { children_.fetch_sub(1); }
   int close_checked() {
@@ -65,7 +80,16 @@ class HandleState {
   Close close_;
   bool closed_{false};
   std::atomic<uint32_t> children_{0};
+  std::atomic<uint32_t> ops_{0};
 };
+
+// A reference to state that counts as an operation in flight until its last copy is released, which for
+// a queued operation is when its worker is deleted after completing
+template <typename State>
+std::shared_ptr<State> in_flight(const std::shared_ptr<State>& state) {
+  state->begin_op();
+  return std::shared_ptr<State>(state.get(), [state](State*) { state->end_op(); });
+}
 
 using ClusterState = HandleState<rados_t>;
 using IoState = HandleState<rados_ioctx_t>;

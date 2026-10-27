@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import {once} from "node:events";
 import {after, before, test} from "node:test";
-import {Cluster, RbdFeature} from "../../src-ts";
+import {CephError, Cluster, RbdFeature} from "../../src-ts";
 
 const enabled = process.env.CEPH_INTEGRATION === "1";
 const pool = process.env.CEPH_TEST_POOL ?? `node-librados-${process.pid}`;
@@ -43,6 +43,23 @@ test("binary RADOS I/O, xattrs, omap, listing, and notifications", {skip: !enabl
   await notification.ack(Buffer.from("pong"));
   assert.ok((await notify).includes(Buffer.from("pong")));
   await watch.close();
+});
+
+test("io context settings do not change under operations in flight", {skip: !enabled}, async () => {
+  await using io = cluster.ioContext(pool);
+  await io.writeFull("busy", Buffer.from("x"));
+  const reads = Array.from({length: 16}, () => io.read("busy", 1n));
+  const busy = (error: unknown) => error instanceof CephError && error.errno === 16;
+  assert.throws(() => io.setNamespace("elsewhere"), busy);
+  assert.throws(() => io.setLocatorKey("elsewhere"), busy);
+  for (const data of await Promise.all(reads)) assert.equal(data.toString(), "x");
+  io.setNamespace("elsewhere");
+  io.setNamespace("");
+  const watch = io.watch("busy");
+  assert.throws(() => io.setNamespace("elsewhere"), busy);
+  await watch.close();
+  io.setNamespace("");
+  await io.remove("busy");
 });
 
 test("RBD image, I/O, metadata, snapshots, resize, and trash", {skip: !enabled}, async () => {

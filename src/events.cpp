@@ -30,6 +30,7 @@ struct ObjectWatchWrap::Data {
     int flush_result = cluster->use([](rados_t handle) { return rados_watch_flush(handle); });
     callback.Release();
     io->remove_child();
+    io->end_op();
     return result < 0 ? result : flush_result;
   }
 };
@@ -101,6 +102,8 @@ Napi::Object ObjectWatchWrap::Create(Napi::Env env, std::shared_ptr<IoState> io,
   data->oid = std::move(oid);
   data->callback = Napi::ThreadSafeFunction::New(env, callback, "RadosObjectWatch", queue_size, 1);
   data->io->add_child();
+  // acks go out in the io context's namespace, which may not change while the watch is registered
+  data->io->begin_op();
   int result = data->io->use([&](rados_ioctx_t handle) {
     return rados_watch3(handle, data->oid.c_str(), &data->cookie, object_watch_cb,
                         object_watch_error_cb, timeout, data.get());
@@ -109,6 +112,7 @@ Napi::Object ObjectWatchWrap::Create(Napi::Env env, std::shared_ptr<IoState> io,
     data->closed = true;
     data->callback.Release();
     data->io->remove_child();
+    data->io->end_op();
     throw_ceph(env, result, "rados_watch3", data->oid);
     return Napi::Object::New(env);
   }

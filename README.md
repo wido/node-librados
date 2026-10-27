@@ -53,6 +53,8 @@ for await (const object of io.objects()) {
 }
 ```
 
+An operation uses the namespace, locator key and read snapshot of its `IoContext` when it runs on the libuv thread pool, not when it is called. `setNamespace()`, `setLocatorKey()` and `setReadSnapshot()` therefore throw a `CephError` with `errno` 16 (`EBUSY`) while operations are in flight or a watch is registered on the `IoContext`. Use one `IoContext` per namespace when they are used at the same time.
+
 Administrative commands are deliberately marked unsafe because their JSON schema and authorization are controlled by the connected Ceph release:
 
 ```ts
