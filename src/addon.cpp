@@ -21,6 +21,10 @@ Napi::Error ceph_error(Napi::Env env, int code, const std::string& operation,
   error.Set("name", "CephError");
   error.Set("code", Napi::Number::New(env, code));
   error.Set("errno", Napi::Number::New(env, positive));
+  // the symbolic name, such as "ENOENT", the way Node's own errors carry their code
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 32))
+  if (const char* name = strerrorname_np(positive)) error.Set("codeName", name);
+#endif
   error.Set("operation", operation);
   if (!resource.empty()) error.Set("resource", resource);
   return error;

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import {test} from "node:test";
-import {capabilities, CephConfirmationError, CephError, RbdFeature, RbdPool, versions} from "../../src-ts";
+import {capabilities, CephConfirmationError, CephError, Cluster, RbdFeature, RbdPool, versions} from "../../src-ts";
 
 test("reports native ABI versions and capabilities", () => {
   assert.equal(versions.napi, 9);
@@ -25,4 +25,14 @@ test("recognizes structured errors emitted by the native addon", () => {
   });
   assert.ok(error instanceof CephError);
   assert.equal(CephError.normalize(error).resource, "object");
+});
+
+test("native errors name their errno", async () => {
+  await assert.rejects(Cluster.connect({configFile: "/nonexistent/node-librados/ceph.conf", parseEnvironment: false}), (error: unknown) => {
+    assert.ok(error instanceof CephError);
+    assert.equal(error.code, -2);
+    assert.equal((error as CephError).codeName, "ENOENT");
+    assert.equal(CephError.normalize(error).codeName, "ENOENT");
+    return true;
+  });
 });

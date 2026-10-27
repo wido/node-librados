@@ -62,6 +62,20 @@ const health = await cluster.unsafeCommand(
 );
 ```
 
+## Errors
+
+A failed Ceph call rejects with a `CephError`: `code` is the negative errno that librados returned, `errno` its absolute value, `codeName` its symbolic name, and `operation` and `resource` name the call.
+
+```ts
+try {
+  await io.read("missing", 16n);
+} catch (error) {
+  if (error instanceof CephError && error.codeName === "ENOENT") {
+    // no such object
+  }
+}
+```
+
 ## Events
 
 The module does not run background inventory or health polling. It translates native callbacks into bounded `EventEmitter` subscriptions.

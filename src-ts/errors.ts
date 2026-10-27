@@ -1,14 +1,17 @@
 export class CephError extends Error {
   readonly code: number;
   readonly errno: number;
+  /** Symbolic errno name such as "ENOENT", when the C library can name it */
+  readonly codeName?: string;
   readonly operation: string;
   readonly resource?: string;
 
-  constructor(message: string, options: {code: number; errno: number; operation: string; resource?: string; cause?: unknown}) {
+  constructor(message: string, options: {code: number; errno: number; codeName?: string; operation: string; resource?: string; cause?: unknown}) {
     super(message, {cause: options.cause});
     this.name = "CephError";
     this.code = options.code;
     this.errno = options.errno;
+    this.codeName = options.codeName;
     this.operation = options.operation;
     this.resource = options.resource;
   }
@@ -22,8 +25,8 @@ export class CephError extends Error {
   static normalize(error: unknown): CephError {
     if (error instanceof CephError) return error;
     if (error && typeof error === "object" && "code" in error && "operation" in error) {
-      const value = error as Error & {code: number; errno?: number; operation: string; resource?: string};
-      return new CephError(value.message, {code: value.code, errno: value.errno ?? Math.abs(value.code), operation: value.operation, resource: value.resource, cause: error});
+      const value = error as Error & {code: number; errno?: number; codeName?: string; operation: string; resource?: string};
+      return new CephError(value.message, {code: value.code, errno: value.errno ?? Math.abs(value.code), codeName: value.codeName, operation: value.operation, resource: value.resource, cause: error});
     }
     throw error;
   }
